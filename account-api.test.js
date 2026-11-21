@@ -1,0 +1,56 @@
+'use strict';
+const assert = require('assert'), http = require('http'), crypto = require('crypto'), os = require('os'), fs = require('fs'), path = require('path');
+const { create, checkClaims } = require('./account-api');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acct-'));
+const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+const pem = publicKey.export({ type: 'spki', format: 'pem' });
+const users = { 'good-token-alice-0000000000': { sub: 'g-alice', email: 'a@x.com', name: 'Alice' }, 'good-token-bob-000000000000': { sub: 'g-bob', email: 'b@x.com', name: 'Bob' } };
+function boot(o) { const api = create(Object.assign({ dataDir: dir, googleClientId: 'cid.apps.googleusercontent.com', verifyGoogle: async (t) => { if (!users[t]) throw new Error('rejected'); return users[t]; }, ssvKeys: { 1: pem } }, o));
+  const srv = http.createServer((q, r) => api.handle(q, r, new URL(q.url, 'http://x')).then((h) => { if (!h) { r.writeHead(404); r.end(); } })); return new Promise((ok) => srv.listen(0, () => ok({ api, srv, port: srv.address().port }))); }
+const call = (port, m, p, b, tok) => new Promise((ok) => { const r = http.request({ port, method: m, path: p, headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}) } }, (res) => { let d = ''; res.on('data', (c) => d += c); res.on('end', () => ok({ s: res.statusCode, j: d ? JSON.parse(d) : {} })); }); if (b) r.write(JSON.stringify(b)); r.end(); });
+const ssvUrl = (nonce, tx, kid = 1, key = privateKey) => { const q = 'ad_network=5450213213286189855&ad_unit=1&reward_amount=1&reward_item=x&timestamp=' + Date.now() + '&transaction_id=' + tx + '&user_id=dev1&custom_data=' + nonce + '&key_id=' + kid; const sig = crypto.sign('sha256', Buffer.from(q), key).toString('base64url'); return '/api/ads/ssv?' + q + '&signature=' + sig + ''; };
+(async () => {
+  let n = 0; const ok = (c, m) => { assert.ok(c, m); n++; };
+  let { api, srv, port } = await boot({});
+  ok((await call(port, 'GET', '/api/config')).j.googleConfigured, 'config');
+  let r = await call(port, 'POST', '/api/auth/google', { idToken: 'forged-token-forged-token-0000' }); ok(r.s === 401 && !r.j.token, 'forged token rejected');
+  r = await call(port, 'POST', '/api/auth/google', {}); ok(r.s === 400, 'missing token');
+  r = await call(port, 'POST', '/api/auth/google', { idToken: 'good-token-alice-0000000000' }); ok(r.s === 200 && r.j.token && r.j.user.sub === 'g-alice' && !r.j.hasProgress, 'alice signs in');
+  const A = r.j.token; r = await call(port, 'POST', '/api/auth/google', { idToken: 'good-token-bob-000000000000' }); const B = r.j.token;
+  ok((await call(port, 'GET', '/api/progress')).s === 401, 'progress needs login');
+  ok((await call(port, 'GET', '/api/progress', null, 'x'.repeat(40))).s === 401, 'bad session rejected');
+  r = await call(port, 'PUT', '/api/progress', { data: { wallet: { coins: 777 } } }, A); ok(r.s === 200, 'save progress'); const t1 = r.j.updatedAt;
+  ok((await call(port, 'GET', '/api/progress', null, A)).j.data.wallet.coins === 777, 'alice restores her data');
+  ok((await call(port, 'GET', '/api/progress', null, B)).j.data === null, "bob does not get alice's data");
+  r = await call(port, 'PUT', '/api/progress', { data: { wallet: { coins: 1 } }, baseUpdatedAt: t1 - 1000 }, A); ok(r.s === 409 && r.j.data.wallet.coins === 777, 'stale write refused');
+  ok((await call(port, 'PUT', '/api/progress', { data: 'x' }, A)).s === 400, 'bad payload');
+  api.flush(); srv.close(); ({ api, srv, port } = await boot({}));
+  ok((await call(port, 'GET', '/api/progress', null, A)).j.data.wallet.coins === 777, 'persisted across restart + session survives');
+  await call(port, 'POST', '/api/auth/logout', {}, A); ok((await call(port, 'GET', '/api/progress', null, A)).s === 401, 'logout kills session');
+  srv.close(); let x = await boot({ googleClientId: '' }); r = await call(x.port, 'POST', '/api/auth/google', { idToken: 'good-token-alice-0000000000' }); ok(r.s === 503 && r.j.error === 'not_configured' && !r.j.token, 'unconfigured -> clear error, no login'); x.srv.close();
+  const now = Date.now() / 1000; const c = { aud: 'c', iss: 'accounts.google.com', exp: now + 99, sub: '1', email: 'a@b', email_verified: 'true' };
+  ok(checkClaims(c, 'c').sub === '1', 'claims ok'); for (const bad of [{ aud: 'other' }, { iss: 'evil.com' }, { exp: now - 5 }, { email_verified: 'false' }, { sub: '' }]) assert.throws(() => checkClaims({ ...c, ...bad }, 'c')); n += 5;
+  /* ads: production mode (SSV) */
+  x = await boot({ adsMode: 'ssv' }); port = x.port;
+  ok((await call(port, 'POST', '/api/ads/start', { kind: 'bogus' })).s === 400, 'bad kind');
+  let a = (await call(port, 'POST', '/api/ads/start', { kind: 'daily', device: 'dev1' })).j.nonce;
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'daily' })).j.reason === 'pending', 'no reward before verification');
+  ok((await call(port, 'POST', '/api/ads/complete', { nonce: a })).s === 403, 'app cannot self-report completion in production');
+  ok((await call(port, 'GET', ssvUrl(a, 't1', 1, crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey))).s === 400, 'forged SSV signature rejected');
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'daily' })).j.reason === 'pending', 'still pending after forged callback');
+  ok((await call(port, 'GET', ssvUrl(a, 't1', 9))).s === 400, 'unknown key id');
+  ok((await call(port, 'GET', ssvUrl(a, 't1'))).j.ok === true, 'genuine SSV accepted');
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'weekly' })).j.reason === 'wrong_kind', 'proof is for its own reward kind only');
+  r = await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'daily' }); ok(r.j.ok && r.j.proof.verified && r.j.proof.txId === 't1', 'redeemed after SSV');
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'daily' })).j.reason === 'already_used', 'second redeem refused');
+  const b2 = (await call(port, 'POST', '/api/ads/start', { kind: 'spin', device: 'dev1' })).j.nonce; ok((await call(port, 'GET', ssvUrl(b2, 't1'))).j.error === 'replay', 'replayed transaction refused');
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: b2, kind: 'spin' })).j.reason === 'pending', 'replay gave no reward');
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: 'nope', kind: 'spin' })).j.reason === 'unknown_or_expired', 'unknown nonce');
+  x.srv.close();
+  /* ads: dev mode with Google TEST units */
+  x = await boot({ adsMode: 'dev' }); port = x.port; a = (await call(port, 'POST', '/api/ads/start', { kind: 'spin', device: 'd' })).j.nonce;
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'spin' })).j.reason === 'pending', 'dev: pending until completion');
+  await call(port, 'POST', '/api/ads/complete', { nonce: a }); ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'spin' })).j.ok, 'dev: redeem after completion');
+  ok((await call(port, 'POST', '/api/ads/redeem', { nonce: a, kind: 'spin' })).j.reason === 'already_used', 'dev: single use'); x.srv.close();
+  console.log('account-api: ' + n + ' checks passed'); process.exit(0);
+})().catch((e) => { console.error('FAIL', e); process.exit(1); });
