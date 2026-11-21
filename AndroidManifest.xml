@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <queries><package android:name="com.whatsapp" /><package android:name="com.whatsapp.w4b" /></queries>
+    <application
+        android:label="@string/app_name"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:usesCleartextTraffic="false"
+        android:theme="@style/Theme.Ludo">
+        <!-- AdMob App ID: Google TEST id in debug, YOUR production id in release (from local.properties). A missing/invalid id crashes the app at start. -->
+        <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="${ADMOB_APP_ID}" />
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout" android:screenOrientation="portrait">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+            <!-- https://<host>/join/CODE?p=PASSWORD opens the app directly (verified App Link; needs /.well-known/assetlinks.json from the server) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${SERVER_HOST}" android:pathPrefix="/join/" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ludoprank" android:host="join" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

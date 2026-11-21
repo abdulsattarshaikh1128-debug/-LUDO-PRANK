@@ -1,0 +1,26 @@
+<!-- Put these inside the <activity> that hosts the game WebView (MainActivity) in your Android project's AndroidManifest.xml.
+     Replace YOUR_DOMAIN with the public host that runs server/ludo-server.js (the same host used in PUBLIC_URL), e.g. ludo.example.com -->
+<uses-permission android:name="android.permission.INTERNET" />
+
+<activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" ...>
+    <!-- Verified HTTPS App Link: https://YOUR_DOMAIN/join/ROOMCODE?p=PASSWORD opens the app directly (no chooser) -->
+    <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" android:host="YOUR_DOMAIN" android:pathPrefix="/join/" />
+    </intent-filter>
+    <!-- Custom scheme fallback: ludoprank://join/ROOMCODE?p=PASSWORD -->
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="ludoprank" android:host="join" />
+    </intent-filter>
+</activity>
+
+<!-- needed so the app can query WhatsApp for the share button (optional, Android 11+) -->
+<queries>
+    <package android:name="com.whatsapp" />
+    <package android:name="com.whatsapp.w4b" />
+</queries>
